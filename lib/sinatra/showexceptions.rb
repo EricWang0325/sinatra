@@ -1,10 +1,48 @@
 require 'rack/showexceptions'
 
 module Sinatra
+  # Sinatra::ShowExceptions catches all exceptions raised from the app it
+  # wraps. It shows a useful backtrace with the sourcefile and clickable
+  # context, the whole Rack environment and the request data.
+  #
+  # Be careful when you use this on public-facing sites as it could reveal
+  # information helpful to attackers.
   class ShowExceptions < Rack::ShowExceptions
+    @@eats_errors = Object.new
+    def @@eats_errors.flush(*) end
+    def @@eats_errors.puts(*) end
+
     def initialize(app)
       @app      = app
       @template = ERB.new(TEMPLATE)
+    end
+
+    def call(env)
+      @app.call(env)
+    rescue Exception => e
+      errors, env["rack.errors"] = env["rack.errors"], @@eats_errors
+
+      if prefers_plain_text?(env)
+        content_type = "text/plain"
+        body = [dump_exception(e)]
+      else
+        content_type = "text/html"
+        body = pretty(env, e)
+      end
+
+      env["rack.errors"] = errors
+
+      [500,
+       {"Content-Type" => content_type,
+        "Content-Length" => Rack::Utils.bytesize(body.join).to_s},
+       body]
+    end
+
+    private
+
+    def prefers_plain_text?(env)
+      !(Request.new(env).preferred_type("text/plain","text/html") == "text/html") &&
+      [/curl/].index{|item| item =~ env["HTTP_USER_AGENT"]}
     end
 
     def frame_class(frame)
@@ -18,7 +56,7 @@ module Sinatra
       end
     end
 
-TEMPLATE = <<HTML
+TEMPLATE = <<-HTML # :nodoc:
 <!DOCTYPE html>
 <html>
 <head>
@@ -73,14 +111,14 @@ TEMPLATE = <<HTML
   #explanation        {font-size: 12px; color: #666666;
                        margin: 20px 0 0 100px;}
 /* WRAP */
-  #wrap               {width: 860px; background: #FFFFFF; margin: 0 auto;
+  #wrap               {width: 1000px; background: #FFFFFF; margin: 0 auto;
                        padding: 30px 50px 20px 50px;
                        border-left: 1px solid #DDDDDD;
                        border-right: 1px solid #DDDDDD;}
 /* HEADER */
   #header             {margin: 0 auto 25px auto;}
   #header img         {float: left;}
-  #header #summary    {float: left; margin: 12px 0 0 20px; width:520px;
+  #header #summary    {float: left; margin: 12px 0 0 20px; width:660px;
                        font-family: 'Lucida Grande', 'Lucida Sans Unicode';}
   h1                  {margin: 0; font-size: 36px; color: #981919;}
   h2                  {margin: 0; font-size: 22px; color: #333333;}
@@ -94,7 +132,7 @@ TEMPLATE = <<HTML
   #get,
   #post,
   #cookies,
-  #rack               {width: 860px; margin: 0 auto 10px auto;}
+  #rack               {width: 980px; margin: 0 auto 10px auto;}
   p#nav               {float: right; font-size: 14px;}
 /* BACKTRACE */
   a#expando           {float: left; padding-left: 5px; color: #666666;
@@ -107,7 +145,7 @@ TEMPLATE = <<HTML
                            font-size: 12px; color: #333333;}
   #backtrace ul       {list-style-position: outside; border: 1px solid #E9E9E9;
                        border-bottom: 0;}
-  #backtrace ol       {width: 808px; margin-left: 50px;
+  #backtrace ol       {width: 920px; margin-left: 50px;
                        font: 10px 'Lucida Console', monospace; color: #666666;}
   #backtrace ol li    {border: 0; border-left: 1px solid #E9E9E9;
                        padding: 2px 0;}
@@ -119,10 +157,11 @@ TEMPLATE = <<HTML
   #backtrace.condensed .framework {display:none;}
 /* REQUEST DATA */
   p.no-data           {padding-top: 2px; font-size: 12px; color: #666666;}
-  table.req           {width: 760px; text-align: left; font-size: 12px;
+  table.req           {width: 980px; text-align: left; font-size: 12px;
                        color: #666666; padding: 0; border-spacing: 0;
                        border: 1px solid #EEEEEE; border-bottom: 0;
-                       border-left: 0;}
+                       border-left: 0;
+                       clear:both}
   table.req tr th     {padding: 2px 10px; font-weight: bold;
                        background: #F7F7F7; border-bottom: 1px solid #EEEEEE;
                        border-left: 1px solid #EEEEEE;}
@@ -132,12 +171,15 @@ TEMPLATE = <<HTML
 /* HIDE PRE/POST CODE AT START */
   .pre-context,
   .post-context       {display: none;}
+
+  table td.code       {width:750px}
+  table td.code div   {width:750px;overflow:hidden}
 </style>
 </head>
 <body>
   <div id="wrap">
     <div id="header">
-      <img src="/__sinatra__/500.png" alt="application error" />
+      <img src="<%= env['SCRIPT_NAME'] %>/__sinatra__/500.png" alt="application error" height="161" width="313" />
       <div id="summary">
         <h1><strong><%=h exception.class %></strong> at <strong><%=h path %>
           </strong></h1>
@@ -215,7 +257,7 @@ TEMPLATE = <<HTML
 
     <div id="get">
       <h3 id="get-info">GET</h3>
-      <% unless req.GET.empty? %>
+      <% if req.GET and not req.GET.empty? %>
         <table class="req">
           <tr>
             <th>Variable</th>
@@ -236,7 +278,7 @@ TEMPLATE = <<HTML
 
     <div id="post">
       <h3 id="post-info">POST</h3>
-      <% unless req.POST.empty? %>
+      <% if req.POST and not req.POST.empty? %>
         <table class="req">
           <tr>
             <th>Variable</th>
@@ -294,7 +336,7 @@ TEMPLATE = <<HTML
     </div> <!-- /RACK ENV -->
 
     <p id="explanation">You're seeing this error because you have
-enabled the <code>show_exceptions</code> option.</p>
+enabled the <code>show_exceptions</code> setting.</p>
   </div> <!-- /WRAP -->
   </body>
 </html>

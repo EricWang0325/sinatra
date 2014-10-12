@@ -1,4 +1,4 @@
-require File.dirname(__FILE__) + '/helper'
+require File.expand_path('../helper', __FILE__)
 
 class BaseTest < Test::Unit::TestCase
   def test_default
@@ -7,9 +7,7 @@ class BaseTest < Test::Unit::TestCase
 
   describe 'Sinatra::Base subclasses' do
     class TestApp < Sinatra::Base
-      get '/' do
-        'Hello World'
-      end
+      get('/') { 'Hello World' }
     end
 
     it 'include Rack::Utils' do
@@ -56,6 +54,24 @@ class BaseTest < Test::Unit::TestCase
     end
   end
 
+  describe "Sinatra::Base#new" do
+    it 'returns a wrapper' do
+      assert_equal Sinatra::Wrapper, Sinatra::Base.new.class
+    end
+
+    it 'implements a nice inspect' do
+      assert_equal '#<Sinatra::Base app_file=nil>', Sinatra::Base.new.inspect
+    end
+
+    it 'exposes settings' do
+      assert_equal Sinatra::Base.settings, Sinatra::Base.new.settings
+    end
+
+    it 'expses helpers' do
+      assert_equal 'image/jpeg', Sinatra::Base.new.helpers.mime_type(:jpg)
+    end
+  end
+
   describe "Sinatra::Base as Rack middleware" do
     app = lambda { |env|
       headers = {'X-Downstream' => 'true'}
@@ -71,7 +87,7 @@ class BaseTest < Test::Unit::TestCase
     end
 
     it 'exposes the downstream app' do
-      middleware = TestMiddleware.new(app)
+      middleware = TestMiddleware.new!(app)
       assert_same app, middleware.app
     end
 
@@ -81,9 +97,7 @@ class BaseTest < Test::Unit::TestCase
         super
       end
 
-      get '/' do
-        'Hello from middleware'
-      end
+      get('/') { 'Hello from middleware' }
     end
 
     middleware = TestMiddleware.new(app)
@@ -107,9 +121,7 @@ class BaseTest < Test::Unit::TestCase
     end
 
     class TestMiddleware < Sinatra::Base
-      get '/low-level-forward' do
-        app.call(env)
-      end
+      get('/low-level-forward') { app.call(env) }
     end
 
     it 'can call the downstream app directly and return result' do

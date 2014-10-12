@@ -1,15 +1,15 @@
-require File.dirname(__FILE__) + '/helper'
+require File.expand_path('../helper', __FILE__)
 
 class MiddlewareTest < Test::Unit::TestCase
   setup do
-    @app = mock_app(Sinatra::Application) {
-      get '/*' do
+    @app = mock_app(Sinatra::Application) do
+      get('/*')do
         response.headers['X-Tests'] = env['test.ran'].
           map { |n| n.split('::').last }.
           join(', ')
         env['PATH_INFO']
       end
-    }
+    end
   end
 
   class MockMiddleware < Struct.new(:app)

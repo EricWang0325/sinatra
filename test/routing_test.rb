@@ -1,4 +1,5 @@
-require File.dirname(__FILE__) + '/helper'
+# I like coding: UTF-8
+require File.expand_path('../helper', __FILE__)
 
 # Helper method for easy route pattern matching testing
 def route_def(pattern)
@@ -22,7 +23,7 @@ class RegexpLookAlike
 end
 
 class RoutingTest < Test::Unit::TestCase
-  %w[get put post delete].each do |verb|
+  %w[get put post delete options patch].each do |verb|
     it "defines #{verb.upcase} request handlers with #{verb}" do
       mock_app {
         send verb, '/hello' do
@@ -60,6 +61,30 @@ class RoutingTest < Test::Unit::TestCase
     assert_equal 404, status
   end
 
+  it "404s and sets X-Cascade header when no route satisfies the request" do
+    mock_app {
+      get('/foo') { }
+    }
+    get '/bar'
+    assert_equal 404, status
+    assert_equal 'pass', response.headers['X-Cascade']
+  end
+
+  it "allows using unicode" do
+    mock_app do
+      get('/föö') { }
+    end
+    get '/f%C3%B6%C3%B6'
+    assert_equal 200, status
+  end
+
+  it "it handles encoded slashes correctly" do
+    mock_app { get("/:a") { |a| a } }
+    get '/foo%2Fbar'
+    assert_equal 200, status
+    assert_body "foo/bar"
+  end
+
   it "overrides the content-type in error handlers" do
     mock_app {
       before { content_type 'text/plain' }
@@ -71,8 +96,38 @@ class RoutingTest < Test::Unit::TestCase
 
     get '/foo'
     assert_equal 404, status
-    assert_equal 'text/html', response["Content-Type"]
+    assert_equal 'text/html;charset=utf-8', response["Content-Type"]
     assert_equal "<h1>Not Found</h1>", response.body
+  end
+
+  it 'matches empty PATH_INFO to "/" if no route is defined for ""' do
+    mock_app do
+      get '/' do
+        'worked'
+      end
+    end
+
+    get '/', {}, "PATH_INFO" => ""
+    assert ok?
+    assert_equal 'worked', body
+  end
+
+  it 'matches empty PATH_INFO to "" if a route is defined for ""' do
+    mock_app do
+      disable :protection
+
+      get '/' do
+        'did not work'
+      end
+
+      get '' do
+        'worked'
+      end
+    end
+
+    get '/', {}, "PATH_INFO" => ""
+    assert ok?
+    assert_equal 'worked', body
   end
 
   it 'takes multiple definitions of a route' do
@@ -149,6 +204,44 @@ class RoutingTest < Test::Unit::TestCase
     assert_equal "foo=;bar=", body
   end
 
+  it "supports named captures like %r{/hello/(?<person>[^/?#]+)} on Ruby >= 1.9" do
+    next if RUBY_VERSION < '1.9'
+    mock_app {
+      get Regexp.new('/hello/(?<person>[^/?#]+)') do
+        "Hello #{params['person']}"
+      end
+    }
+    get '/hello/Frank'
+    assert_equal 'Hello Frank', body
+  end
+
+  it "supports optional named captures like %r{/page(?<format>.[^/?#]+)?} on Ruby >= 1.9" do
+    next if RUBY_VERSION < '1.9'
+    mock_app {
+      get Regexp.new('/page(?<format>.[^/?#]+)?') do
+        "format=#{params[:format]}"
+      end
+    }
+
+    get '/page.html'
+    assert ok?
+    assert_equal "format=.html", body
+
+    get '/page.xml'
+    assert ok?
+    assert_equal "format=.xml", body
+
+    get '/page'
+    assert ok?
+    assert_equal "format=", body
+  end
+
+  it 'does not concatinate params with the same name' do
+    mock_app { get('/:foo') { params[:foo] } }
+    get '/a?foo=b'
+    assert_body 'a'
+  end
+
   it "supports single splat params like /*" do
     mock_app {
       get '/*' do
@@ -217,7 +310,7 @@ class RoutingTest < Test::Unit::TestCase
     assert_equal 'right on', body
   end
 
-  it "literally matches . in paths" do
+  it "literally matches dot in paths" do
     route_def '/test.bar'
 
     get '/test.bar'
@@ -226,14 +319,14 @@ class RoutingTest < Test::Unit::TestCase
     assert not_found?
   end
 
-  it "literally matches $ in paths" do
+  it "literally matches dollar sign in paths" do
     route_def '/test$/'
 
     get '/test$/'
     assert ok?
   end
 
-  it "literally matches + in paths" do
+  it "literally matches plus sign in paths" do
     route_def '/te+st/'
 
     get '/te%2Bst/'
@@ -242,7 +335,18 @@ class RoutingTest < Test::Unit::TestCase
     assert not_found?
   end
 
-  it "literally matches () in paths" do
+  it "converts plus sign into space as the value of a named param" do
+    mock_app {
+      get '/:test' do
+        params["test"]
+      end
+    }
+    get '/bob+ross'
+    assert ok?
+    assert_equal 'bob ross', body
+  end
+
+  it "literally matches parens in paths" do
     route_def '/test(bar)/'
 
     get '/test(bar)/'
@@ -271,6 +375,30 @@ class RoutingTest < Test::Unit::TestCase
     }
     get '/testme?bar[foo]=baz'
     assert_equal 'well, alright', body
+  end
+
+  it "exposes params nested within arrays with indifferent hash" do
+    mock_app {
+      get '/testme' do
+        assert_equal 'baz', params['bar'][0]['foo']
+        assert_equal 'baz', params['bar'][0][:foo]
+        'well, alright'
+      end
+    }
+    get '/testme?bar[][foo]=baz'
+    assert_equal 'well, alright', body
+  end
+
+  it "supports arrays within params" do
+    mock_app {
+      get '/foo' do
+        assert_equal ['A', 'B'], params['bar']
+        'looks good'
+      end
+    }
+    get '/foo?bar[]=A&bar[]=B'
+    assert ok?
+    assert_equal 'looks good', body
   end
 
   it "supports deeply nested params" do
@@ -331,6 +459,18 @@ class RoutingTest < Test::Unit::TestCase
     }
 
     get '/path+with+spaces'
+    assert ok?
+    assert_equal 'looks good', body
+  end
+
+  it "matches paths that include ampersands" do
+    mock_app {
+      get '/:name' do
+        'looks good'
+      end
+    }
+
+    get '/foo&bar'
     assert ok?
     assert_equal 'looks good', body
   end
@@ -432,6 +572,17 @@ class RoutingTest < Test::Unit::TestCase
     assert_equal 'HelloWorldHowAreYou', body
   end
 
+  it 'sets response.status with halt' do
+    status_was = nil
+    mock_app do
+      after { status_was = status }
+      get('/') { halt 500, 'error' }
+    end
+    get '/'
+    assert_status 500
+    assert_equal 500, status_was
+  end
+
   it "transitions to the next matching route on pass" do
     mock_app {
       get '/:foo' do
@@ -460,6 +611,23 @@ class RoutingTest < Test::Unit::TestCase
 
     get '/bar'
     assert not_found?
+  end
+
+  it "transitions to 404 and sets X-Cascade header when passed and no subsequent route matches" do
+    mock_app {
+      get '/:foo' do
+        pass
+        'Hello Foo'
+      end
+
+      get '/bar' do
+        'Hello Bar'
+      end
+    }
+
+    get '/foo'
+    assert not_found?
+    assert_equal 'pass', response.headers['X-Cascade']
   end
 
   it "uses optional block passed to pass as route block if no other route is found" do
@@ -552,6 +720,18 @@ class RoutingTest < Test::Unit::TestCase
     assert_equal 'Hello World', body
   end
 
+  it "treats missing user agent like an empty string" do
+    mock_app do
+      user_agent(/.*/)
+      get '/' do
+        "Hello World"
+      end
+    end
+    get '/'
+    assert_equal 200, status
+    assert_equal 'Hello World', body
+  end
+
   it "makes captures in user agent pattern available in params[:agent]" do
     mock_app {
       user_agent(/Foo (.*)/)
@@ -567,17 +747,52 @@ class RoutingTest < Test::Unit::TestCase
   it "filters by accept header" do
     mock_app {
       get '/', :provides => :xml do
-        request.env['HTTP_ACCEPT']
+        env['HTTP_ACCEPT']
+      end
+      get '/foo', :provides => :html do
+        env['HTTP_ACCEPT']
       end
     }
 
     get '/', {}, { 'HTTP_ACCEPT' => 'application/xml' }
     assert ok?
     assert_equal 'application/xml', body
-    assert_equal 'application/xml', response.headers['Content-Type']
+    assert_equal 'application/xml;charset=utf-8', response.headers['Content-Type']
 
     get '/', {}, { :accept => 'text/html' }
     assert !ok?
+
+    get '/foo', {}, { 'HTTP_ACCEPT' => 'text/html;q=0.9' }
+    assert ok?
+    assert_equal 'text/html;q=0.9', body
+
+    get '/foo', {}, { 'HTTP_ACCEPT' => '' }
+    assert !ok?
+  end
+
+  it "filters by current Content-Type" do
+    mock_app do
+      before('/txt') { content_type :txt }
+      get('*', :provides => :txt) { 'txt' }
+
+      before('/html') { content_type :html }
+      get('*', :provides => :html) { 'html' }
+    end
+
+    get '/', {}, { 'HTTP_ACCEPT' => '*' }
+    assert ok?
+    assert_equal 'text/plain;charset=utf-8', response.headers['Content-Type']
+    assert_body 'txt'
+
+    get '/txt', {}, { 'HTTP_ACCEPT' => 'text/plain' }
+    assert ok?
+    assert_equal 'text/plain;charset=utf-8', response.headers['Content-Type']
+    assert_body 'txt'
+
+    get '/', {}, { 'HTTP_ACCEPT' => 'text/html' }
+    assert ok?
+    assert_equal 'text/html;charset=utf-8', response.headers['Content-Type']
+    assert_body 'html'
   end
 
   it "allows multiple mime types for accept header" do
@@ -585,7 +800,7 @@ class RoutingTest < Test::Unit::TestCase
 
     mock_app {
       get '/', :provides => types do
-        request.env['HTTP_ACCEPT']
+        env['HTTP_ACCEPT']
       end
     }
 
@@ -600,7 +815,7 @@ class RoutingTest < Test::Unit::TestCase
   it 'degrades gracefully when optional accept header is not provided' do
     mock_app {
       get '/', :provides => :xml do
-        request.env['HTTP_ACCEPT']
+        env['HTTP_ACCEPT']
       end
       get '/' do
         'default'
@@ -609,6 +824,77 @@ class RoutingTest < Test::Unit::TestCase
     get '/'
     assert ok?
     assert_equal 'default', body
+  end
+
+  it 'respects user agent prefferences for the content type' do
+    mock_app { get('/', :provides => [:png, :html]) { content_type }}
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/png;q=0.5,text/html;q=0.8' }
+    assert_body 'text/html;charset=utf-8'
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/png;q=0.8,text/html;q=0.5' }
+    assert_body 'image/png'
+  end
+
+  it 'accepts generic types' do
+    mock_app do
+      get('/', :provides => :xml) { content_type }
+      get('/') { 'no match' }
+    end
+    get '/'
+    assert_body 'no match'
+    get '/', {}, { 'HTTP_ACCEPT' => 'foo/*' }
+    assert_body 'no match'
+    get '/', {}, { 'HTTP_ACCEPT' => 'application/*' }
+    assert_body 'application/xml;charset=utf-8'
+    get '/', {}, { 'HTTP_ACCEPT' => '*/*' }
+    assert_body 'application/xml;charset=utf-8'
+  end
+
+  it 'prefers concrete over partly generic types' do
+    mock_app { get('/', :provides => [:png, :html]) { content_type }}
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/*, text/html' }
+    assert_body 'text/html;charset=utf-8'
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/png, text/*' }
+    assert_body 'image/png'
+  end
+
+  it 'prefers concrete over fully generic types' do
+    mock_app { get('/', :provides => [:png, :html]) { content_type }}
+    get '/', {}, { 'HTTP_ACCEPT' => '*/*, text/html' }
+    assert_body 'text/html;charset=utf-8'
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/png, */*' }
+    assert_body 'image/png'
+  end
+
+  it 'prefers partly generic over fully generic types' do
+    mock_app { get('/', :provides => [:png, :html]) { content_type }}
+    get '/', {}, { 'HTTP_ACCEPT' => '*/*, text/*' }
+    assert_body 'text/html;charset=utf-8'
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/*, */*' }
+    assert_body 'image/png'
+  end
+
+  it 'respects quality with generic types' do
+    mock_app { get('/', :provides => [:png, :html]) { content_type }}
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/*;q=1, text/html;q=0' }
+    assert_body 'image/png'
+    get '/', {}, { 'HTTP_ACCEPT' => 'image/png;q=0.5, text/*;q=0.7' }
+    assert_body 'text/html;charset=utf-8'
+  end
+
+  it 'accepts both text/javascript and application/javascript for js' do
+    mock_app { get('/', :provides => :js) { content_type }}
+    get '/', {}, { 'HTTP_ACCEPT' => 'application/javascript' }
+    assert_body 'application/javascript;charset=utf-8'
+    get '/', {}, { 'HTTP_ACCEPT' => 'text/javascript' }
+    assert_body 'text/javascript;charset=utf-8'
+  end
+
+  it 'accepts both text/xml and application/xml for xml' do
+    mock_app { get('/', :provides => :xml) { content_type }}
+    get '/', {}, { 'HTTP_ACCEPT' => 'application/xml' }
+    assert_body 'application/xml;charset=utf-8'
+    get '/', {}, { 'HTTP_ACCEPT' => 'text/xml' }
+    assert_body 'text/xml;charset=utf-8'
   end
 
   it 'passes a single url param as block parameters when one param is specified' do
@@ -665,11 +951,11 @@ class RoutingTest < Test::Unit::TestCase
   end
 
   it 'raises an ArgumentError with block arity > 1 and too many values' do
-    mock_app {
+    mock_app do
       get '/:foo/:bar/:baz' do |foo, bar|
         'quux'
       end
-    }
+    end
 
     assert_raise(ArgumentError) { get '/a/b/c' }
   end
@@ -830,5 +1116,60 @@ class RoutingTest < Test::Unit::TestCase
     get '/bar'
     assert ok?
     assert_equal 'bar in baseclass', body
+  end
+
+  it "adds hostname condition when it is in options" do
+    mock_app {
+      get '/foo', :host => 'host' do
+        'foo'
+      end
+    }
+
+    get '/foo'
+    assert not_found?
+  end
+
+  it 'allows using call to fire another request internally' do
+    mock_app do
+      get '/foo' do
+        status, headers, body = call env.merge("PATH_INFO" => '/bar')
+        [status, headers, body.each.map(&:upcase)]
+      end
+
+      get '/bar' do
+        "bar"
+      end
+    end
+
+    get '/foo'
+    assert ok?
+    assert_body "BAR"
+  end
+
+  it 'plays well with other routing middleware' do
+    middleware = Sinatra.new
+    inner_app  = Sinatra.new { get('/foo') { 'hello' } }
+    builder    = Rack::Builder.new do
+      use middleware
+      map('/test') { run inner_app }
+    end
+
+    @app = builder.to_app
+    get '/test/foo'
+    assert ok?
+    assert_body 'hello'
+  end
+
+  it 'returns the route signature' do
+    signature = list = nil
+
+    mock_app do
+      signature = post('/') { }
+      list = routes['POST']
+    end
+
+    assert_equal Array, signature.class
+    assert_equal 4, signature.length
+    assert list.include?(signature)
   end
 end
